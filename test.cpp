@@ -1,10 +1,19 @@
 #include <iostream>
 #include <fstream>
+#include <string>
+#include <stdio.h>
+
 #include <opencv/cv.h>
 #include <opencv/highgui.h>
 
+#include <mysql_connection.h>
+#include <mysql_driver.h>
+#include <mysql_error.h>
+#include <cppconn/statement.h>
+
 using namespace std;
 using namespace cv;
+using namespace sql;
 
 struct imageHeader
 {
@@ -20,6 +29,8 @@ struct labelHeader
 	int number;
 };
 
+void save2DB(const string imageFileName, const string labelFIleName, const string tableName, Statement *stmt);
+
 int bytes2int(const char *bytes);
 void readImageHeader(ifstream &infile, imageHeader &header);
 void readLabelHeader(ifstream &infile, labelHeader &header);
@@ -28,25 +39,70 @@ int readLabel(ifstream &infile, const labelHeader &header, int index);
 
 int main()
 {
+	string url("tcp://127.0.0.1:3306");
+	string user("root");
+	string pwd("yin941031");
+
+	mysql::MySQL_Driver *driver=NULL;
+	Connection *con=NULL;
+	Statement *stmt=NULL;
+
+	try{
+		driver = sql::mysql::get_driver_instance();
+		con = driver->connect(url, user, pwd);
+		stmt = con->createStatement();
+		stmt->execute("use MNIST");
+		save2DB("t10k-images-idx3-ubyte", "t10k-labels-idx1-ubyte", "test", stmt);
+
+		delete con;
+		delete stmt;
+	}catch(SQLException &e){
+		cout << "# ERR: SQLException in " << __FILE__;
+		// cout << "(" << EXAMPLE_FUNCTION << ") on line " << __LINE__ << endl;
+		/* Use what() (derived from std::runtime_error) to fetch the error message */
+		cout << "# ERR: " << e.what();
+		cout << " (MySQL error code: " << e.getErrorCode();
+		cout << ", SQLState: " << e.getSQLState() << " )" << endl;
+		cout << "not ok 1 - examples/connect.php" << endl;
+
+	}
+	
+	return 0;
+}
+
+void save2DB(const string imageFileName, const string labelFIleName, const string tableName, Statement *stmt)
+{
 	ifstream imagefile, labelfile;
-	imagefile.open("train-images-idx3-ubyte", ifstream::in|ifstream::binary);
-	labelfile.open("train-labels-idx1-ubyte", ifstream::in|ifstream::binary);
+	imagefile.open(imageFileName.c_str(), ifstream::in | ifstream::binary);
+	labelfile.open(labelFIleName.c_str(), ifstream::in | ifstream::binary);
+
 	imageHeader ih;
 	labelHeader lh;
 	readImageHeader(imagefile, ih);
 	readLabelHeader(labelfile, lh);
 
-	namedWindow("image", CV_WINDOW_NORMAL);
-	for(int i=0; i<10; i++){
-		imshow("image", readImage(imagefile,ih, i));
-		waitKey(500);
-		cout<<readLabel(labelfile, lh, i)<<" ";
+	if(ih.number != lh.number) return;
+
+	stmt->execute("create table if not exists "+tableName+"(id INT PRIMARY KEY, image_path VARCHAR(100), label INT)");
+
+	int a[10]={0};
+	for(int i=0; i<ih.number; i++){
+		Mat img = readImage(imagefile, ih, i);
+		int label = readLabel(labelfile, lh, i);
+		a[label]++;
+		char name[100];
+		sprintf(name, "%s_%d_%d.jpg",tableName.c_str(), label, a[label]);
+		string path=string("/home/yinshuo/Datasets/MNIST/image/")+name;
+		imwrite(path,img);
+		char order[200];
+		string temp="insert into "+tableName+" values(%d, \""+path+"\", %d)";
+		sprintf(order, temp.c_str(), i, label);
+		stmt->execute(order);
 	}
+
 	imagefile.close();
 	labelfile.close();
 
-	// infile.close();
-	return 0;
 }
 
 int bytes2int(const char *bytes)
